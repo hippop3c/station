@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<title>YouBike 每小時在站車輛數（最終穩定版）</title>
+<title>YouBike 每小時在站車輛數（最終穩定版・車位上限）</title>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -23,7 +23,7 @@ th,td { border:1px solid #ccc; padding:4px 6px; text-align:center; }
 
 <body>
 
-<h2>YouBike 每小時在站車輛數（最終穩定版）</h2>
+<h2>YouBike 每小時在站車輛數（營運決策版）</h2>
 
 <div class="section">
   <b>① 上傳 Excel（雙北配置線上版 v1.xlsx → 每小時變化）</b><br>
@@ -63,25 +63,15 @@ init.addEventListener("input", refresh);
 
 function loadExcel(e){
   const file = e.target.files[0];
-  if(!file){
-    alert("未選擇檔案");
-    return;
-  }
+  if(!file){ alert("未選擇檔案"); return; }
 
   const reader = new FileReader();
-
   reader.onload = evt => {
-    const data = evt.target.result;
-    const wb = XLSX.read(data, { type: "array" });
+    const wb = XLSX.read(evt.target.result, { type:"array" });
     const ws = wb.Sheets["每小時變化"];
-
-    if(!ws){
-      alert("找不到工作表：每小時變化");
-      return;
-    }
+    if(!ws){ alert("找不到工作表：每小時變化"); return; }
 
     const rows = XLSX.utils.sheet_to_json(ws);
-
     DB = rows.map(r => ({
       station: r["場站"],
       area: r["責任區"],
@@ -94,11 +84,6 @@ function loadExcel(e){
     stations.innerHTML = DB.map(d => `<option value="${d.station}">`).join("");
     alert("Excel 載入完成，請選場站並輸入 5 點車輛數");
   };
-
-  reader.onerror = () => {
-    alert("Excel 讀取失敗");
-  };
-
   reader.readAsArrayBuffer(file);
 }
 
@@ -112,8 +97,8 @@ function refresh(){
   area.value = rec.area;
   capacity.value = rec.capacity;
 
-  const upper = rec.capacity * 2;
-  const lower = -upper;
+  const upper = rec.capacity;        // ⭐ 上限改為車位數
+  const lower = -rec.capacity * 2;   // 下限維持 −2×車位
 
   const actual = [];
   const plot = [];
@@ -166,14 +151,14 @@ function drawChart(plot, overUp, overDown, upper, lower, label){
           rotation: ctx => overDown[ctx.dataIndex] ? 180 : 0
         },
         {
-          label:"顯示上限 (+2×)",
+          label:"車位上限",
           data:HOURS.map(()=>upper),
           borderDash:[6,6],
           borderColor:"red",
           pointRadius:0
         },
         {
-          label:"顯示下限 (-2×)",
+          label:"顯示下限 (−2×)",
           data:HOURS.map(()=>lower),
           borderDash:[6,6],
           borderColor:"red",
@@ -226,7 +211,7 @@ function drawTable(actual, capacity, upper, lower){
 
   actual.forEach((v,i)=>{
     let cls="", status="正常", risk="";
-    if(v > upper){ cls="overUp"; status="超過顯示上限"; risk="⚠"; }
+    if(v > upper){ cls="overUp"; status="超過車位上限"; risk="⚠"; }
     else if(v < lower){ cls="overDown"; status="低於顯示下限"; risk="🔻"; }
 
     html += `
@@ -247,3 +232,4 @@ function drawTable(actual, capacity, upper, lower){
 
 </body>
 </html>
+
