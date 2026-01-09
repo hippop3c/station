@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>YouBike 每小時在站車輛數（最終穩定版）</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<style>
+body { font-family:"Microsoft JhengHei",Arial; margin:20px; }
+.section { border:1px solid #ccc; border-radius:8px; padding:12px; margin-bottom:12px; }
+label { display:inline-block; width:120px; }
+input { padding:6px; margin:4px 0; }
+canvas { max-height:420px; }
+
+table { border-collapse:collapse; width:100%; margin-top:8px; }
+th,td { border:1px solid #ccc; padding:4px 6px; text-align:center; }
+.overUp { background:#f8d7da; }
+.overDown { background:#dbeafe; }
+</style>
+</head>
+
+<body>
+
+<h2>YouBike 每小時在站車輛數（最終穩定版）</h2>
+
+<div class="section">
+  <b>① 上傳 Excel（雙北配置線上版 v1.xlsx → 每小時變化）</b><br>
+  <input type="file" id="fileInput" accept=".xlsx">
+</div>
+
+<div class="section">
+  <label>場站</label>
+  <input list="stations" id="station"><br>
+  <label>責任區</label>
+  <input id="area" readonly>
+  <label>總車位</label>
+  <input id="capacity" readonly><br>
+  <label>5 點車輛數</label>
+  <input type="number" id="init">
+</div>
+
+<datalist id="stations"></datalist>
+
+<div class="section">
+  <canvas id="chart"></canvas>
+</div>
+
+<div class="section">
+  <h3>逐時在站車輛數（實際值）</h3>
+  <div id="dataTable"></div>
+</div>
+
+<script>
+let DB = [];
+const HOURS = [5, ...Array.from({length:18},(_,i)=>i+6)];
+let chart = null;
+
+fileInput.addEventListener("change", loadExcel);
+station.addEventListener("change", refresh);
+init.addEventListener("input", refresh);
+
+function loadExcel(e){
+  const file = e.target.files[0];
+  if(!file){
+    alert("未選擇檔案");
+    return;
+  }
+
+  const reader = new FileReader();
+
+  reader.onload = evt => {
+    const data = evt.target.result;
+    const wb = XLSX.read(data, { type: "array" });
+    const ws = wb.Sheets["每小時變化"];
+
+    if(!ws){
+      alert("找不到工作表：每小時變化");
+      return;
+    }
+
+    const rows = XLSX.utils.sheet_to_json(ws);
+
+    DB = rows.map(r => ({
+      station: r["場站"],
+      area: r["責任區"],
+      capacity: Number(r["總車位數"]),
+      deltas: Object.fromEntries(
+        Array.from({length:18},(_,i)=>[i+6, Number(r[i+6])])
+      )
+    }));
+
+    stations.innerHTML = DB.map(d => `<option value="${d.station}">`).join("");
+    alert("Excel 載入完成，請選場站並輸入 5 點車輛數");
+  };
+
+  reader.onerror = () => {
+    alert("Excel 讀取失敗");
+  };
+
+  reader.readAsArrayBuffer(file);
+}
+
+function refresh(){
+  if(DB.length === 0) return;
+
+  const rec = DB.find(d => d.station === station.value);
+  const base = Number(init.value);
+  if(!rec || isNaN(base)) return;
+
+  area.value = rec.area;
+  capacity.value = rec.capacity;
+
+  const upper = rec.capacity * 2;
+  const lower = -upper;
+
+  const actual = [];
+  const plot = [];
+  const overUp = [];
+  const overDown = [];
+
+  function handle(v){
+    actual.push(v);
+    if(v > upper){
+      plot.push(upper);
+      overUp.push(v);
+      overDown.push(null);
+    }else if(v < lower){
+      plot.push(lower);
+      overUp.push(null);
+      overDown.push(v);
+    }else{
+      plot.push(v);
+      overUp.push(null);
+      overDown.push(null);
+    }
+  }
+
+  handle(base);
+  for(let h=6; h<=23; h++){
+    handle(base + rec.deltas[h]);
+  }
+
+  drawChart(plot, overUp, overDown, upper, lower, rec.station);
+  drawTable(actual, rec.capacity, upper, lower);
+}
+
+function drawChart(plot, overUp, overDown, upper, lower, label){
+  if(chart) chart.destroy();
+
+  chart = new Chart(document.getElementById("chart"), {
+    type:"line",
+    data:{
+      labels:HOURS,
+      datasets:[
+        {
+          label: label + " 在站車輛數",
+          data: plot,
+          borderColor:"green",
+          borderWidth:2,
+          tension:0.35,
+          pointRadius: ctx => (overUp[ctx.dataIndex] || overDown[ctx.dataIndex]) ? 6 : 3,
+          pointStyle: ctx => overUp[ctx.dataIndex] ? "triangle" :
+                             overDown[ctx.dataIndex] ? "triangle" : "circle",
+          rotation: ctx => overDown[ctx.dataIndex] ? 180 : 0
+        },
+        {
+          label:"顯示上限 (+2×)",
+          data:HOURS.map(()=>upper),
+          borderDash:[6,6],
+          borderColor:"red",
+          pointRadius:0
+        },
+        {
+          label:"顯示下限 (-2×)",
+          data:HOURS.map(()=>lower),
+          borderDash:[6,6],
+          borderColor:"red",
+          pointRadius:0
+        },
+        {
+          label:"0 基準",
+          data:HOURS.map(()=>0),
+          borderColor:"orange",
+          pointRadius:0
+        }
+      ]
+    },
+    options:{
+      scales:{ y:{ min: lower, max: upper } }
+    },
+    plugins:[{
+      id:"valueLabels",
+      afterDatasetsDraw(chart){
+        const {ctx, scales:{x,y}} = chart;
+        ctx.save();
+        ctx.fillStyle = "red";
+        ctx.font = "12px Arial";
+
+        plot.forEach((_,i)=>{
+          if(overUp[i] !== null){
+            ctx.fillText(overUp[i], x.getPixelForValue(i)+6, y.getPixelForValue(upper)-6);
+          }
+          if(overDown[i] !== null){
+            ctx.fillText(overDown[i], x.getPixelForValue(i)+6, y.getPixelForValue(lower)+14);
+          }
+        });
+        ctx.restore();
+      }
+    }]
+  });
+}
+
+function drawTable(actual, capacity, upper, lower){
+  let html = `
+    <table>
+      <tr>
+        <th>時間</th>
+        <th>在站車輛數（實際）</th>
+        <th>狀態</th>
+        <th>與車位差距</th>
+        <th>風險</th>
+      </tr>
+  `;
+
+  actual.forEach((v,i)=>{
+    let cls="", status="正常", risk="";
+    if(v > upper){ cls="overUp"; status="超過顯示上限"; risk="⚠"; }
+    else if(v < lower){ cls="overDown"; status="低於顯示下限"; risk="🔻"; }
+
+    html += `
+      <tr class="${cls}">
+        <td>${HOURS[i]}</td>
+        <td>${v}</td>
+        <td>${status}</td>
+        <td>${v - capacity}</td>
+        <td>${risk}</td>
+      </tr>
+    `;
+  });
+
+  html += "</table>";
+  dataTable.innerHTML = html;
+}
+</script>
+
+</body>
+</html>
