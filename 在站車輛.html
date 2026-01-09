@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>YouBike 每小時在站車輛數（決策版）</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<style>
+body { font-family:"Microsoft JhengHei",Arial; margin:20px; }
+.section { border:1px solid #ccc; border-radius:8px; padding:12px; margin-bottom:12px; }
+label { display:inline-block; width:120px; }
+input { padding:6px; margin:4px 0; }
+canvas { max-height:420px; }
+
+table { border-collapse:collapse; width:100%; margin-top:8px; }
+th,td { border:1px solid #ccc; padding:4px 6px; text-align:center; }
+.overUp { background:#f8d7da; }
+.overDown { background:#dbeafe; }
+</style>
+</head>
+
+<body>
+
+<h2>YouBike 每小時在站車輛數（營運決策版）</h2>
+
+<div class="section">
+  <b>① 上傳 Excel（雙北配置線上版 v1.xlsx → 每小時變化）</b><br>
+  <input type="file" id="fileInput" accept=".xlsx">
+</div>
+
+<div class="section">
+  <label>場站</label>
+  <input list="stations" id="station"><br>
+  <label>責任區</label>
+  <input id="area" readonly>
+  <label>總車位</label>
+  <input id="capacity" readonly><br>
+  <label>5 點車輛數</label>
+  <input type="number" id="init">
+</div>
+
+<datalist id="stations"></datalist>
+
+<div class="section">
+  <canvas id="chart"></canvas>
+</div>
+
+<div class="section">
+  <h3>逐時在站車輛數（實際值）</h3>
+  <div id="dataTable"></div>
+</div>
+
+<script>
+let DB = [];
+const HOURS = [5, ...Array.from({length:18},(_,i)=>i+6)];
+let chart = null;
+
+fileInput.addEventListener("change", loadExcel);
+station.addEventListener("change", refresh);
+init.addEventListener("input", refresh);
+
+function loadExcel(e){
+  const file = e.target.files[0];
+  if(!file) return;
+
+  const reader = new FileReader();
+  reader.onload = evt => {
+    const wb = XLSX.read(evt.target.result, {type:"binary"});
+    const ws = wb.Sheets["每小時變化"];
+    const rows = XLSX.utils.sheet_to_json(ws);
+
+    DB = rows.map(r => ({
+      station: r["場站"],
+      area: r["責任區"],
+      capacity: Number(r["總車位數"]),
+      de
