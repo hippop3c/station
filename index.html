@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<title>YouBike 每小時在站車輛數（最終穩定版・車位上限）</title>
+<title>YouBike 每小時在站車輛數（最終穩定版）</title>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -97,8 +97,8 @@ function refresh(){
   area.value = rec.area;
   capacity.value = rec.capacity;
 
-  const upper = rec.capacity;        // ⭐ 上限改為車位數
-  const lower = -rec.capacity * 2;   // 下限維持 −2×車位
+  const upper = rec.capacity;          // 上限＝車位數
+  const lower = -rec.capacity * 2;     // 下限＝-2×車位
 
   const actual = [];
   const plot = [];
@@ -158,7 +158,7 @@ function drawChart(plot, overUp, overDown, upper, lower, label){
           pointRadius:0
         },
         {
-          label:"顯示下限 (−2×)",
+          label:"顯示下限 (-2×)",
           data:HOURS.map(()=>lower),
           borderDash:[6,6],
           borderColor:"red",
@@ -184,11 +184,15 @@ function drawChart(plot, overUp, overDown, upper, lower, label){
         ctx.font = "12px Arial";
 
         plot.forEach((_,i)=>{
+          const xPos = x.getPixelForValue(i);
+          const isLast = i === HOURS.length - 1;
+          const offsetX = isLast ? -30 : 6;
+
           if(overUp[i] !== null){
-            ctx.fillText(overUp[i], x.getPixelForValue(i)+6, y.getPixelForValue(upper)-6);
+            ctx.fillText(overUp[i], xPos + offsetX, y.getPixelForValue(upper) - 6);
           }
           if(overDown[i] !== null){
-            ctx.fillText(overDown[i], x.getPixelForValue(i)+6, y.getPixelForValue(lower)+14);
+            ctx.fillText(overDown[i], xPos + offsetX, y.getPixelForValue(lower) + 14);
           }
         });
         ctx.restore();
