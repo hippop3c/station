@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<title>YouBike 每小時在站車輛數（含調度模擬）</title>
+<title>YouBike 每小時在站車輛數（含調度最佳解）</title>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -10,24 +10,29 @@
 <style>
 body { font-family:"Microsoft JhengHei",Arial; margin:20px; }
 .section { border:1px solid #ccc; border-radius:8px; padding:12px; margin-bottom:12px; }
-label { display:inline-block; width:150px; }
+label { display:inline-block; width:190px; }
 input { padding:6px; margin:4px 0; }
+button { padding:6px 10px; margin-top:6px; cursor:pointer; }
+small { color:#555; }
 canvas { max-height:420px; }
 
 table { border-collapse:collapse; width:100%; margin-top:8px; }
 th,td { border:1px solid #ccc; padding:4px 6px; text-align:center; }
 .overUp { background:#f8d7da; }
 .overDown { background:#dbeafe; }
+.kpi { font-weight:700; }
+.msg { padding:8px 10px; background:#f6f6f6; border-radius:6px; margin-top:8px; white-space:pre-line; }
 </style>
 </head>
 
 <body>
 
-<h2>YouBike 每小時在站車輛數（含調度模擬）</h2>
+<h2>YouBike 每小時在站車輛數（含調度最佳解）</h2>
 
 <div class="section">
   <b>① 上傳 Excel（雙北配置線上版 v1.xlsx → 每小時變化）</b><br>
   <input type="file" id="fileInput" accept=".xlsx">
+  <div class="msg" id="loadMsg" style="display:none;"></div>
 </div>
 
 <div class="section">
@@ -40,13 +45,17 @@ th,td { border:1px solid #ccc; padding:4px 6px; text-align:center; }
   <input id="capacity" readonly><br>
 
   <label>5 點車輛數</label>
-  <input type="number" id="init" value="0"><br>
+  <input type="number" id="init" value="0">
+  <small>（整天在站數以此為基準，加上 Excel 的每小時變化量與調度量）</small><br>
 
-  <label>10–15 點調度數量</label>
+  <label>10–15 點調度數量（影響 15–23）</label>
   <input type="number" id="dispatch15" value="0"><br>
 
-  <label>21–24 點調度數量</label>
-  <input type="number" id="dispatch21" value="0">
+  <label>21–24 點調度數量（影響 21–23）</label>
+  <input type="number" id="dispatch21" value="0"><br>
+
+  <button id="btnSolve">一鍵試算最佳解（優先調度=0）</button>
+  <div class="msg" id="solveMsg" style="display:none;"></div>
 </div>
 
 <datalist id="stations"></datalist>
@@ -70,10 +79,16 @@ station.addEventListener("change", refresh);
 init.addEventListener("input", refresh);
 dispatch15.addEventListener("input", refresh);
 dispatch21.addEventListener("input", refresh);
+btnSolve.addEventListener("click", autoSolve);
+
+function showMsg(el, txt){
+  el.style.display = "block";
+  el.textContent = txt;
+}
 
 function loadExcel(e){
   const file = e.target.files[0];
-  if(!file) return;
+  if(!file){ return; }
 
   const reader = new FileReader();
   reader.onload = evt => {
@@ -85,46 +100,181 @@ function loadExcel(e){
     DB = rows.map(r => ({
       station: r["場站"],
       area: r["責任區"],
+      code: r["編號"],
       capacity: Number(r["總車位數"]),
-      deltas: Object.fromEntries(
-        Array.from({length:18},(_,i)=>[i+6, Number(r[i+6])])
-      )
+      start5: ("5起始車輛" in r) ? Number(r["5起始車輛"]) : null,
+      deltas: Object.fromEntries(Array.from({length:18},(_,i)=>[i+6, Number(r[i+6])]))
     }));
 
     stations.innerHTML = DB.map(d => `<option value="${d.station}">`).join("");
-    alert("Excel 載入完成");
+    showMsg(loadMsg, `Excel 載入完成：${DB.length} 筆場站\n請選場站後可直接試算 / 調整參數`);
   };
   reader.readAsArrayBuffer(file);
 }
 
+// ====== 核心：依你規則計算在站車輛數 ======
+function computeActualSeries(rec, base, D15, D21){
+  const series = [];
+  // 5
+  series.push(base);
+  for(let h=6; h<=23; h++){
+    let v = base + rec.deltas[h];
+    if(h >= 15) v += D15;
+    if(h >= 21) v += D21;
+    series.push(v);
+  }
+  return series; // index aligns with HOURS
+}
+
+// ====== 一鍵求解（優先 D15=D21=0） ======
+// 條件：對所有小時 0 < S(h) < C；且 0 < B < C
+function boundsForHours(rec, hoursArr){
+  const C = rec.capacity;
+  let lo = -1e18, hi = 1e18;
+  for(const h of hoursArr){
+    const delta = (h === 5) ? 0 : rec.deltas[h];
+    lo = Math.max(lo, -delta + 1);
+    hi = Math.min(hi, C - delta - 1);
+  }
+  return [Math.trunc(lo), Math.trunc(hi)];
+}
+function clamp(x, lo, hi){ return x < lo ? lo : (x > hi ? hi : x); }
+
+function chooseB(lo, hi, prefer){
+  if(lo > hi) return null;
+  if(Number.isFinite(prefer) && lo <= prefer && prefer <= hi) return Math.trunc(prefer);
+  return Math.trunc((lo + hi) / 2);
+}
+
+function autoSolve(){
+  if(DB.length === 0){ alert("請先上傳 Excel"); return; }
+  const rec = DB.find(d => d.station === station.value);
+  if(!rec){ alert("請先選擇場站"); return; }
+
+  const C = rec.capacity;
+
+  // segment hours
+  const H1 = Array.from({length:10},(_,i)=>i+5);   // 5-14
+  const H2 = Array.from({length:6},(_,i)=>i+15);   // 15-20
+  const H3 = [21,22,23];
+
+  // base constraints from 5-14 (dispatch can't fix)
+  const [A1,B1] = boundsForHours(rec, H1);
+  let Lbase = Math.max(1, A1);
+  let Ubase = Math.min(C-1, B1);
+  if(Lbase > Ubase){
+    showMsg(solveMsg, `【無解】5–14 點已無法滿足 0<S<C（調度也無法修正）`);
+    return;
+  }
+
+  const [A2,B2] = boundsForHours(rec, H2);
+  const [A3,B3] = boundsForHours(rec, H3);
+
+  // 1) priority: D15=0,D21=0
+  let L0 = Math.max(Lbase, A2, A3);
+  let U0 = Math.min(Ubase, B2, B3);
+  if(L0 <= U0){
+    const b = chooseB(L0, U0, rec.start5);
+    init.value = b;
+    dispatch15.value = 0;
+    dispatch21.value = 0;
+    showMsg(solveMsg, `✅ 最佳解（調度=0）存在\n可行 5 點配置範圍：${L0}～${U0}\n推薦 5 點配置：${b}\nD15=0、D21=0`);
+    refresh();
+    return;
+  }
+
+  // 2) minimal dispatch
+  // D15 feasible range so that Ibase ∩ I2(D15) non-empty, where I2(D15)=[A2-D15, B2-D15]
+  const rlo = A2 - Ubase;
+  const rhi = B2 - Lbase;
+  if(rlo > rhi){
+    showMsg(solveMsg, `【無解】15–20 點無法透過 D15 形成可行區間（結構性失衡）`);
+    return;
+  }
+
+  // enumerate D15 by increasing abs within [rlo,rhi]
+  const candD15 = [];
+  const maxAbs = Math.max(Math.abs(rlo), Math.abs(rhi));
+  for(let k=0; k<=maxAbs; k++){
+    const vals = (k===0) ? [0] : [k, -k];
+    for(const v of vals){
+      if(rlo <= v && v <= rhi) candD15.push(v);
+    }
+    if(candD15.length > 2000) break;
+  }
+
+  let best = null;
+
+  for(const D15 of candD15){
+    // I12 = Ibase ∩ I2(D15)
+    const L12 = Math.max(Lbase, A2 - D15);
+    const U12 = Math.min(Ubase, B2 - D15);
+    if(L12 > U12) continue;
+
+    // feasible Dsum = D15+D21 from segment3 overlap with I12: Dsum in [A3-U12, B3-L12]
+    const sumLo = A3 - U12;
+    const sumHi = B3 - L12;
+    if(sumLo > sumHi) continue;
+
+    // pick Dsum closest to D15 to minimize |D21|
+    const Dsum = clamp(D15, sumLo, sumHi);
+    const D21 = Dsum - D15;
+    const total = Math.abs(D15) + Math.abs(D21);
+
+    // final B range
+    const Lfinal = Math.max(L12, A3 - Dsum);
+    const Ufinal = Math.min(U12, B3 - Dsum);
+    if(Lfinal > Ufinal) continue;
+
+    const b = chooseB(Lfinal, Ufinal, rec.start5);
+
+    const cand = {D15, D21, total, Lfinal, Ufinal, b};
+    if(!best || cand.total < best.total || (cand.total === best.total && Math.abs(cand.D15) < Math.abs(best.D15))){
+      best = cand;
+      if(best.total === 1) break;
+    }
+  }
+
+  if(!best){
+    showMsg(solveMsg, `【無解】嘗試最小調度仍無法滿足整天 0<S<C（建議列為結構性失衡站）`);
+    return;
+  }
+
+  init.value = best.b;
+  dispatch15.value = best.D15;
+  dispatch21.value = best.D21;
+
+  const cls = (best.total <= C) ? "B(需調度)" : "C(高調度需求)";
+  showMsg(solveMsg,
+    `⚠ 找不到調度=0解，已提供最小調度解\n類別：${cls}\n可行 5 點配置範圍：${best.Lfinal}～${best.Ufinal}\n推薦：5點=${best.b}、D15=${best.D15}、D21=${best.D21}\n最小調度總量 |D15|+|D21| = ${best.total}`
+  );
+  refresh();
+}
+
+// ====== 圖表與表格（沿用你上次專案：上限=車位、下限=-2×車位、0線橘色、超限/下限標記與數值顯示、最後點文字不出框） ======
 function refresh(){
   if(DB.length === 0) return;
-
   const rec = DB.find(d => d.station === station.value);
   if(!rec) return;
-
-  const base = Number(init.value);
-  const d15 = Number(dispatch15.value);
-  const d21 = Number(dispatch21.value);
 
   area.value = rec.area;
   capacity.value = rec.capacity;
 
-  const upper = rec.capacity;
-  const lower = -rec.capacity * 2;
+  const base = Number(init.value);
+  if(!Number.isFinite(base)) return;
 
-  const actual = [];
+  const D15 = Number(dispatch15.value) || 0;
+  const D21 = Number(dispatch21.value) || 0;
+
+  const upper = rec.capacity;          // 上限=車位
+  const lower = -rec.capacity * 2;     // 下限=-2×車位
+
+  const actual = computeActualSeries(rec, base, D15, D21);
   const plot = [];
   const overUp = [];
   const overDown = [];
 
-  function handle(hour, natural){
-    let v = base + natural;
-    if(hour >= 15) v += d15;
-    if(hour >= 21) v += d21;
-
-    actual.push(v);
-
+  for(const v of actual){
     if(v > upper){
       plot.push(upper); overUp.push(v); overDown.push(null);
     }else if(v < lower){
@@ -134,16 +284,111 @@ function refresh(){
     }
   }
 
-  handle(5, 0);
-  for(let h=6; h<=23; h++){
-    handle(h, rec.deltas[h]);
-  }
-
   drawChart(plot, overUp, overDown, upper, lower, rec.station);
   drawTable(actual, rec.capacity, upper, lower);
 }
 
-/* drawChart、drawTable 與你上一版完全相同，為節省篇幅略 */
+function drawChart(plot, overUp, overDown, upper, lower, label){
+  if(chart) chart.destroy();
+
+  chart = new Chart(document.getElementById("chart"), {
+    type:"line",
+    data:{
+      labels:HOURS,
+      datasets:[
+        {
+          label: label + " 在站車輛數",
+          data: plot,
+          borderColor:"green",
+          borderWidth:2,
+          tension:0.35,
+          pointRadius: ctx => (overUp[ctx.dataIndex] || overDown[ctx.dataIndex]) ? 6 : 3,
+          pointStyle: ctx => overUp[ctx.dataIndex] ? "triangle" :
+                             overDown[ctx.dataIndex] ? "triangle" : "circle",
+          rotation: ctx => overDown[ctx.dataIndex] ? 180 : 0
+        },
+        {
+          label:"車位上限",
+          data:HOURS.map(()=>upper),
+          borderDash:[6,6],
+          borderColor:"red",
+          pointRadius:0
+        },
+        {
+          label:"顯示下限 (-2×)",
+          data:HOURS.map(()=>lower),
+          borderDash:[6,6],
+          borderColor:"red",
+          pointRadius:0
+        },
+        {
+          label:"0 基準",
+          data:HOURS.map(()=>0),
+          borderColor:"orange",
+          pointRadius:0
+        }
+      ]
+    },
+    options:{
+      scales:{ y:{ min: lower, max: upper } }
+    },
+    plugins:[{
+      id:"valueLabels",
+      afterDatasetsDraw(chart){
+        const {ctx, scales:{x,y}} = chart;
+        ctx.save();
+        ctx.fillStyle = "red";
+        ctx.font = "12px Arial";
+
+        plot.forEach((_,i)=>{
+          const xPos = x.getPixelForValue(i);
+          const isLast = i === HOURS.length - 1;
+          const offsetX = isLast ? -30 : 6;
+
+          if(overUp[i] !== null){
+            ctx.fillText(overUp[i], xPos + offsetX, y.getPixelForValue(upper) - 6);
+          }
+          if(overDown[i] !== null){
+            ctx.fillText(overDown[i], xPos + offsetX, y.getPixelForValue(lower) + 14);
+          }
+        });
+        ctx.restore();
+      }
+    }]
+  });
+}
+
+function drawTable(actual, capacity, upper, lower){
+  let html = `
+    <table>
+      <tr>
+        <th>時間</th>
+        <th>在站車輛數（實際）</th>
+        <th>狀態</th>
+        <th>與車位差距</th>
+        <th>風險</th>
+      </tr>
+  `;
+
+  actual.forEach((v,i)=>{
+    let cls="", status="正常", risk="";
+    if(v > upper){ cls="overUp"; status="超過車位上限"; risk="⚠"; }
+    else if(v < lower){ cls="overDown"; status="低於顯示下限"; risk="🔻"; }
+
+    html += `
+      <tr class="${cls}">
+        <td>${HOURS[i]}</td>
+        <td>${v}</td>
+        <td>${status}</td>
+        <td>${v - capacity}</td>
+        <td>${risk}</td>
+      </tr>
+    `;
+  });
+
+  html += "</table>";
+  dataTable.innerHTML = html;
+}
 </script>
 
 </body>
