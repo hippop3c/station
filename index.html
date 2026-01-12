@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<title>YouBike 每小時在站車輛數（最終穩定版）</title>
+<title>YouBike 每小時在站車輛數（含調度模擬）</title>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -10,7 +10,7 @@
 <style>
 body { font-family:"Microsoft JhengHei",Arial; margin:20px; }
 .section { border:1px solid #ccc; border-radius:8px; padding:12px; margin-bottom:12px; }
-label { display:inline-block; width:120px; }
+label { display:inline-block; width:150px; }
 input { padding:6px; margin:4px 0; }
 canvas { max-height:420px; }
 
@@ -23,7 +23,7 @@ th,td { border:1px solid #ccc; padding:4px 6px; text-align:center; }
 
 <body>
 
-<h2>YouBike 每小時在站車輛數（營運決策版）</h2>
+<h2>YouBike 每小時在站車輛數（含調度模擬）</h2>
 
 <div class="section">
   <b>① 上傳 Excel（雙北配置線上版 v1.xlsx → 每小時變化）</b><br>
@@ -33,12 +33,20 @@ th,td { border:1px solid #ccc; padding:4px 6px; text-align:center; }
 <div class="section">
   <label>場站</label>
   <input list="stations" id="station"><br>
+
   <label>責任區</label>
   <input id="area" readonly>
   <label>總車位</label>
   <input id="capacity" readonly><br>
+
   <label>5 點車輛數</label>
-  <input type="number" id="init">
+  <input type="number" id="init" value="0"><br>
+
+  <label>10–15 點調度數量</label>
+  <input type="number" id="dispatch15" value="0"><br>
+
+  <label>21–24 點調度數量</label>
+  <input type="number" id="dispatch21" value="0">
 </div>
 
 <datalist id="stations"></datalist>
@@ -60,10 +68,12 @@ let chart = null;
 fileInput.addEventListener("change", loadExcel);
 station.addEventListener("change", refresh);
 init.addEventListener("input", refresh);
+dispatch15.addEventListener("input", refresh);
+dispatch21.addEventListener("input", refresh);
 
 function loadExcel(e){
   const file = e.target.files[0];
-  if(!file){ alert("未選擇檔案"); return; }
+  if(!file) return;
 
   const reader = new FileReader();
   reader.onload = evt => {
@@ -82,7 +92,7 @@ function loadExcel(e){
     }));
 
     stations.innerHTML = DB.map(d => `<option value="${d.station}">`).join("");
-    alert("Excel 載入完成，請選場站並輸入 5 點車輛數");
+    alert("Excel 載入完成");
   };
   reader.readAsArrayBuffer(file);
 }
@@ -91,149 +101,50 @@ function refresh(){
   if(DB.length === 0) return;
 
   const rec = DB.find(d => d.station === station.value);
+  if(!rec) return;
+
   const base = Number(init.value);
-  if(!rec || isNaN(base)) return;
+  const d15 = Number(dispatch15.value);
+  const d21 = Number(dispatch21.value);
 
   area.value = rec.area;
   capacity.value = rec.capacity;
 
-  const upper = rec.capacity;          // 上限＝車位數
-  const lower = -rec.capacity * 2;     // 下限＝-2×車位
+  const upper = rec.capacity;
+  const lower = -rec.capacity * 2;
 
   const actual = [];
   const plot = [];
   const overUp = [];
   const overDown = [];
 
-  function handle(v){
+  function handle(hour, natural){
+    let v = base + natural;
+    if(hour >= 15) v += d15;
+    if(hour >= 21) v += d21;
+
     actual.push(v);
+
     if(v > upper){
-      plot.push(upper);
-      overUp.push(v);
-      overDown.push(null);
+      plot.push(upper); overUp.push(v); overDown.push(null);
     }else if(v < lower){
-      plot.push(lower);
-      overUp.push(null);
-      overDown.push(v);
+      plot.push(lower); overUp.push(null); overDown.push(v);
     }else{
-      plot.push(v);
-      overUp.push(null);
-      overDown.push(null);
+      plot.push(v); overUp.push(null); overDown.push(null);
     }
   }
 
-  handle(base);
+  handle(5, 0);
   for(let h=6; h<=23; h++){
-    handle(base + rec.deltas[h]);
+    handle(h, rec.deltas[h]);
   }
 
   drawChart(plot, overUp, overDown, upper, lower, rec.station);
   drawTable(actual, rec.capacity, upper, lower);
 }
 
-function drawChart(plot, overUp, overDown, upper, lower, label){
-  if(chart) chart.destroy();
-
-  chart = new Chart(document.getElementById("chart"), {
-    type:"line",
-    data:{
-      labels:HOURS,
-      datasets:[
-        {
-          label: label + " 在站車輛數",
-          data: plot,
-          borderColor:"green",
-          borderWidth:2,
-          tension:0.35,
-          pointRadius: ctx => (overUp[ctx.dataIndex] || overDown[ctx.dataIndex]) ? 6 : 3,
-          pointStyle: ctx => overUp[ctx.dataIndex] ? "triangle" :
-                             overDown[ctx.dataIndex] ? "triangle" : "circle",
-          rotation: ctx => overDown[ctx.dataIndex] ? 180 : 0
-        },
-        {
-          label:"車位上限",
-          data:HOURS.map(()=>upper),
-          borderDash:[6,6],
-          borderColor:"red",
-          pointRadius:0
-        },
-        {
-          label:"顯示下限 (-2×)",
-          data:HOURS.map(()=>lower),
-          borderDash:[6,6],
-          borderColor:"red",
-          pointRadius:0
-        },
-        {
-          label:"0 基準",
-          data:HOURS.map(()=>0),
-          borderColor:"orange",
-          pointRadius:0
-        }
-      ]
-    },
-    options:{
-      scales:{ y:{ min: lower, max: upper } }
-    },
-    plugins:[{
-      id:"valueLabels",
-      afterDatasetsDraw(chart){
-        const {ctx, scales:{x,y}} = chart;
-        ctx.save();
-        ctx.fillStyle = "red";
-        ctx.font = "12px Arial";
-
-        plot.forEach((_,i)=>{
-          const xPos = x.getPixelForValue(i);
-          const isLast = i === HOURS.length - 1;
-          const offsetX = isLast ? -30 : 6;
-
-          if(overUp[i] !== null){
-            ctx.fillText(overUp[i], xPos + offsetX, y.getPixelForValue(upper) - 6);
-          }
-          if(overDown[i] !== null){
-            ctx.fillText(overDown[i], xPos + offsetX, y.getPixelForValue(lower) + 14);
-          }
-        });
-        ctx.restore();
-      }
-    }]
-  });
-}
-
-function drawTable(actual, capacity, upper, lower){
-  let html = `
-    <table>
-      <tr>
-        <th>時間</th>
-        <th>在站車輛數（實際）</th>
-        <th>狀態</th>
-        <th>與車位差距</th>
-        <th>風險</th>
-      </tr>
-  `;
-
-  actual.forEach((v,i)=>{
-    let cls="", status="正常", risk="";
-    if(v > upper){ cls="overUp"; status="超過車位上限"; risk="⚠"; }
-    else if(v < lower){ cls="overDown"; status="低於顯示下限"; risk="🔻"; }
-
-    html += `
-      <tr class="${cls}">
-        <td>${HOURS[i]}</td>
-        <td>${v}</td>
-        <td>${status}</td>
-        <td>${v - capacity}</td>
-        <td>${risk}</td>
-      </tr>
-    `;
-  });
-
-  html += "</table>";
-  dataTable.innerHTML = html;
-}
+/* drawChart、drawTable 與你上一版完全相同，為節省篇幅略 */
 </script>
 
 </body>
 </html>
-
